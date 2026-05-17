@@ -1,7 +1,7 @@
 .{
     .name = .twilic,
     .version = "2.0.0",
-    .fingerprint = 0x342daba75478317d,
+    .fingerprint = 0xde4b86a72cbd947,
     .minimum_zig_version = "0.15.0",
     .dependencies = .{},
     .paths = .{
