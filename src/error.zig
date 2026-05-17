@@ -1,4 +1,4 @@
-pub const RecurramError = error{
+pub const TwilicError = error{
     UnexpectedEof,
     InvalidKind,
     InvalidTag,
@@ -9,4 +9,4 @@ pub const RecurramError = error{
     UnsupportedKind,
 };
 
-pub const Result = RecurramError;
+pub const Result = TwilicError;

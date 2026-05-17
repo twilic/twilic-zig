@@ -1,8 +1,8 @@
-# Recurram (Zig)
+# Twilic (Zig)
 
-Zig implementation of the Recurram wire format and session-aware encoder/decoder.
+Zig implementation of the Twilic wire format and session-aware encoder/decoder.
 
-This repository tracks the Recurram v2 release line.
+This repository tracks the Twilic v2 release line.
 
 ## What this package provides
 
@@ -20,25 +20,25 @@ This repository tracks the Recurram v2 release line.
 
 ```zig
 const std = @import("std");
-const recurram = @import("recurram");
+const twilic = @import("twilic");
 
 pub fn main() !void {
     const allocator = std.heap.page_allocator;
 
-    var entries = try allocator.alloc(recurram.model.ValueMapEntry, 2);
+    var entries = try allocator.alloc(twilic.model.ValueMapEntry, 2);
     entries[0] = .{ .key = try allocator.dupe(u8, "id"), .value = .{ .U64 = 1001 } };
     entries[1] = .{ .key = try allocator.dupe(u8, "name"), .value = .{ .String = try allocator.dupe(u8, "alice") } };
 
-    var value = recurram.Value{ .Map = entries };
+    var value = twilic.Value{ .Map = entries };
     defer value.deinit(allocator);
 
-    const bytes = try recurram.encode(allocator, &value);
+    const bytes = try twilic.encode(allocator, &value);
     defer allocator.free(bytes);
 
-    var decoded = try recurram.decode(allocator, bytes);
+    var decoded = try twilic.decode(allocator, bytes);
     defer decoded.deinit(allocator);
 
-    std.debug.assert(recurram.Value.eql(decoded, value));
+    std.debug.assert(twilic.Value.eql(decoded, value));
 }
 ```
 
@@ -69,7 +69,7 @@ Run both directions:
 bash scripts/check-interop.sh
 ```
 
-Note: these scripts expect `../recurram-rust` to exist as a sibling directory.
+Note: these scripts expect `../twilic-rust` to exist as a sibling directory.
 
 ## CI and release (GitHub Actions)
 

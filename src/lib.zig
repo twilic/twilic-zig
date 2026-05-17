@@ -8,11 +8,11 @@ pub const wire = @import("wire.zig");
 
 const std = @import("std");
 
-pub const RecurramError = errors.RecurramError;
+pub const TwilicError = errors.TwilicError;
 pub const Value = model.Value;
 pub const Schema = model.Schema;
 pub const Message = model.Message;
-pub const RecurramCodec = protocol.RecurramCodec;
+pub const TwilicCodec = protocol.TwilicCodec;
 pub const SessionEncoder = protocol.SessionEncoder;
 pub const SessionOptions = session.SessionOptions;
 pub const UnknownReferencePolicy = session.UnknownReferencePolicy;
@@ -49,7 +49,7 @@ test "roundtrip dynamic value" {
     var value = Value{ .Map = map_entries };
     defer value.deinit(allocator);
 
-    var codec_impl = RecurramCodec.init(allocator, .{});
+    var codec_impl = TwilicCodec.init(allocator, .{});
     defer codec_impl.deinit();
 
     const encoded = try codec_impl.encodeValue(&value);

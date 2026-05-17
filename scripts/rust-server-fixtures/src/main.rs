@@ -1,7 +1,7 @@
-use recurram::{
+use twilic::{
     model::{ControlStreamCodec, Message, MessageKind, Value},
     wire::Reader,
-    RecurramCodec, SessionEncoder, SessionOptions,
+    TwilicCodec, SessionEncoder, SessionOptions,
 };
 
 fn encode_hex(bytes: &[u8]) -> String {
@@ -69,7 +69,7 @@ fn control_stream_frame_mode(bytes: &[u8]) -> Result<u8, String> {
 }
 
 fn main() -> Result<(), String> {
-    let mut codec = RecurramCodec::default();
+    let mut codec = TwilicCodec::default();
 
     let scalar_string = Value::String("alpha".to_string());
     let bytes = codec

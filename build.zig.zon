@@ -1,5 +1,5 @@
 .{
-    .name = .recurram,
+    .name = .twilic,
     .version = "2.0.0",
     .fingerprint = 0x342daba75478317d,
     .minimum_zig_version = "0.15.0",

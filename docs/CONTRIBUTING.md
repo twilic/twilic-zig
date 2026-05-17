@@ -1,10 +1,10 @@
 # Contributing
 
-Thank you for improving the Recurram Zig implementation.
+Thank you for improving the Twilic Zig implementation.
 
 ## Scope
 
-This package implements the Recurram wire format and session-aware encoder/decoder. Keep changes aligned with the normative spec in [recurram/recurram](https://github.com/recurram/recurram).
+This package implements the Twilic wire format and session-aware encoder/decoder. Keep changes aligned with the normative spec in [twilic/twilic](https://github.com/twilic/twilic).
 
 ## Development
 
