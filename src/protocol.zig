@@ -876,7 +876,9 @@ pub const TwilicCodec = struct {
                             return TwilicError.InvalidData;
                         }
 
-                        const combined = try self.allocator.alloc(u8, prefix_idx + suffix.len);
+                        const combined_len = try std.math.add(usize, prefix_idx, suffix.len);
+                        const combined = try self.allocator.alloc(u8, combined_len);
+                        errdefer self.allocator.free(combined);
                         std.mem.copyForwards(u8, combined[0..prefix_idx], base[0..prefix_idx]);
                         std.mem.copyForwards(u8, combined[prefix_idx..], suffix);
                         _ = try self.state.string_table.register(self.allocator, combined);
