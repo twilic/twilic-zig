@@ -1661,6 +1661,7 @@ pub const TwilicCodec = struct {
         const fingerprint = try shapeFingerprintOwned(self.allocator, keys);
         errdefer self.allocator.free(fingerprint);
         if (self.state.encode_shape_observations.getPtr(fingerprint)) |existing| {
+            self.allocator.free(fingerprint);
             existing.* = @max(existing.*, count);
         } else {
             try self.state.encode_shape_observations.put(self.allocator, fingerprint, count);
