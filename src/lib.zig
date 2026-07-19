@@ -37,6 +37,18 @@ pub fn encodeBatch(allocator: std.mem.Allocator, values: []const Value) ![]u8 {
     return enc.encodeBatch(values);
 }
 
+pub fn encodeBoundStream(allocator: std.mem.Allocator, schema: Schema, values: []const Value) ![]u8 {
+    var enc = SessionEncoder.init(allocator, .{});
+    defer enc.deinit();
+    return enc.encodeBoundStream(schema, values);
+}
+
+pub fn encodeBatchWithSchema(allocator: std.mem.Allocator, schema: Schema, values: []const Value) ![]u8 {
+    var enc = SessionEncoder.init(allocator, .{});
+    defer enc.deinit();
+    return enc.encodeBatchWithSchema(schema, values);
+}
+
 pub fn createSessionEncoder(allocator: std.mem.Allocator, options: SessionOptions) SessionEncoder {
     return SessionEncoder.init(allocator, options);
 }

@@ -615,6 +615,104 @@ test "state patch map insert and delete reconstructs previous message" {
     try std.testing.expectEqual(@as(usize, 2), deleted.Map.len);
 }
 
+test "encode bound stream roundtrips and creates bound stream" {
+    const allocator = std.testing.allocator;
+    var schema = try userSchema(allocator);
+    defer schema.deinit(allocator);
+
+    var enc = twilic.SessionEncoder.init(allocator, .{});
+    defer enc.deinit();
+
+    var value = try userMapValue(allocator, 1005, "alice", "admin");
+    defer value.deinit(allocator);
+    var value2 = try userMapValue(allocator, 1006, "bob", "user");
+    defer value2.deinit(allocator);
+
+    const values = [_]twilic.Value{ value, value2 };
+    const bytes = try enc.encodeBoundStream(schema, &values);
+    defer allocator.free(bytes);
+
+    var msg = try enc.decodeMessage(bytes);
+    defer msg.deinit(allocator);
+    try std.testing.expect(msg == .BoundStream);
+    try std.testing.expectEqual(@as(u64, 41), msg.BoundStream.schema_id);
+    try std.testing.expectEqual(@as(usize, 2), msg.BoundStream.records.len);
+    try std.testing.expectEqual(@as(u8, @intFromEnum(twilic.model.PresenceStrategy.Normal)), @intFromEnum(msg.BoundStream.presence_strategy));
+    try std.testing.expectEqual(@as(usize, 2), msg.BoundStream.records[0].fields.len);
+}
+
+test "encode batch with schema roundtrips" {
+    const allocator = std.testing.allocator;
+    var schema = try userSchema(allocator);
+    defer schema.deinit(allocator);
+
+    var enc = twilic.SessionEncoder.init(allocator, .{});
+    defer enc.deinit();
+
+    var value = try userMapValue(allocator, 1005, "alice", "admin");
+    defer value.deinit(allocator);
+    var value2 = try userMapValue(allocator, 1006, "bob", "user");
+    defer value2.deinit(allocator);
+
+    const values = [_]twilic.Value{ value, value2 };
+    const bytes = try enc.encodeBatchWithSchema(schema, &values);
+    defer allocator.free(bytes);
+
+    var msg = try enc.decodeMessage(bytes);
+    defer msg.deinit(allocator);
+    try std.testing.expect(msg == .SchemaBatch);
+    try std.testing.expectEqual(@as(u64, 41), msg.SchemaBatch.schema_id);
+    try std.testing.expectEqual(@as(u64, 2), msg.SchemaBatch.count);
+}
+
+test "encode bound stream public api roundtrips" {
+    const allocator = std.testing.allocator;
+    var schema = try userSchema(allocator);
+    defer schema.deinit(allocator);
+
+    var value = try userMapValue(allocator, 1005, "alice", "admin");
+    defer value.deinit(allocator);
+    var value2 = try userMapValue(allocator, 1006, "bob", "user");
+    defer value2.deinit(allocator);
+
+    const values = [_]twilic.Value{ value, value2 };
+    const bytes = try twilic.encodeBoundStream(allocator, schema, &values);
+    defer allocator.free(bytes);
+
+    var codec = twilic.TwilicCodec.init(allocator, .{});
+    defer codec.deinit();
+    try codec.state.schemas.put(allocator, schema.schema_id, try schema.clone(allocator));
+
+    var msg = try codec.decodeMessage(bytes);
+    defer msg.deinit(allocator);
+    try std.testing.expect(msg == .BoundStream);
+    try std.testing.expectEqual(@as(usize, 2), msg.BoundStream.records.len);
+}
+
+test "encode batch with schema public api roundtrips" {
+    const allocator = std.testing.allocator;
+    var schema = try userSchema(allocator);
+    defer schema.deinit(allocator);
+
+    var value = try userMapValue(allocator, 1005, "alice", "admin");
+    defer value.deinit(allocator);
+    var value2 = try userMapValue(allocator, 1006, "bob", "user");
+    defer value2.deinit(allocator);
+
+    const values = [_]twilic.Value{ value, value2 };
+    const bytes = try twilic.encodeBatchWithSchema(allocator, schema, &values);
+    defer allocator.free(bytes);
+
+    var codec = twilic.TwilicCodec.init(allocator, .{});
+    defer codec.deinit();
+    try codec.state.schemas.put(allocator, schema.schema_id, try schema.clone(allocator));
+
+    var msg = try codec.decodeMessage(bytes);
+    defer msg.deinit(allocator);
+    try std.testing.expect(msg == .SchemaBatch);
+    try std.testing.expectEqual(@as(u64, 2), msg.SchemaBatch.count);
+}
+
 test "base snapshot roundtrips and registers by id" {
     const allocator = std.testing.allocator;
     var codec = twilic.TwilicCodec.init(allocator, .{});
@@ -710,6 +808,7 @@ fn userSchema(allocator: std.mem.Allocator) !twilic.Schema {
         .number = 1,
         .name = try allocator.dupe(u8, "id"),
         .logical_type = try allocator.dupe(u8, "u64"),
+        .physical_encoding = .Auto,
         .required = true,
         .default_value = null,
         .min = 1000,
@@ -720,6 +819,7 @@ fn userSchema(allocator: std.mem.Allocator) !twilic.Schema {
         .number = 2,
         .name = try allocator.dupe(u8, "name"),
         .logical_type = try allocator.dupe(u8, "string"),
+        .physical_encoding = .Auto,
         .required = true,
         .default_value = null,
         .min = null,
@@ -730,6 +830,7 @@ fn userSchema(allocator: std.mem.Allocator) !twilic.Schema {
         .number = 3,
         .name = try allocator.dupe(u8, "score"),
         .logical_type = try allocator.dupe(u8, "i64"),
+        .physical_encoding = .Auto,
         .required = false,
         .default_value = null,
         .min = 0,

@@ -13,7 +13,11 @@ pub const DictionaryFallback = enum(u8) {
     StatelessRetry = 1,
 
     pub fn fromByte(byte: u8) ?DictionaryFallback {
-        return std.meta.intToEnum(DictionaryFallback, byte) catch null;
+        return switch (byte) {
+            0 => .FailFast,
+            1 => .StatelessRetry,
+            else => null,
+        };
     }
 };
 
@@ -34,7 +38,7 @@ pub const SessionOptions = struct {
 
 pub const InternTable = struct {
     by_value: std.StringHashMapUnmanaged(u64) = .{},
-    by_id: std.ArrayListUnmanaged([]u8) = .{},
+    by_id: std.ArrayListUnmanaged([]u8) = .{ .items = &.{}, .capacity = 0 },
 
     pub fn deinit(self: *InternTable, allocator: Allocator) void {
         self.clear(allocator);
@@ -196,7 +200,7 @@ pub const SessionState = struct {
     string_table: InternTable = .{},
     shape_table: ShapeTable = .{},
     encode_shape_observations: std.StringHashMapUnmanaged(u64) = .{},
-    base_snapshots: std.ArrayListUnmanaged(BaseSnapshotItem) = .{},
+    base_snapshots: std.ArrayListUnmanaged(BaseSnapshotItem) = .{ .items = &.{}, .capacity = 0 },
     templates: std.AutoHashMapUnmanaged(u64, model.TemplateDescriptor) = .{},
     template_columns: std.AutoHashMapUnmanaged(u64, []model.Column) = .{},
     field_enums: std.StringHashMapUnmanaged([][]u8) = .{},

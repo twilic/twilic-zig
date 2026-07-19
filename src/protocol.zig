@@ -27,6 +27,8 @@ const ControlOpcode = model.ControlOpcode;
 const ControlStreamCodec = model.ControlStreamCodec;
 const StringMode = model.StringMode;
 const BaseRef = model.BaseRef;
+const PresenceStrategy = model.PresenceStrategy;
+const BoundRecord = model.BoundRecord;
 const PatchOpcode = model.PatchOpcode;
 const PatchOperation = model.PatchOperation;
 const TemplateDescriptor = model.TemplateDescriptor;
@@ -125,6 +127,8 @@ pub const TwilicCodec = struct {
                 break :blk .{ .Map = try shapeValuesToMap(keys, shaped.presence, shaped.values, self.allocator) };
             },
             .TypedVector => |vector| try typedVectorToValue(vector, self.allocator),
+            .SchemaBatch => TwilicError.InvalidData,
+            .BoundStream => TwilicError.InvalidData,
             else => TwilicError.InvalidData,
         };
     }
@@ -380,18 +384,17 @@ pub const TwilicCodec = struct {
                 }
                 try self.writePresence(schema_obj.presence, out);
                 try wire.encodeVaruint(schema_obj.fields.len, out);
-                const schema = blk: {
-                    const schema_id = effective_schema_id orelse self.state.last_schema_id orelse break :blk null;
-                    break :blk self.state.schemas.getPtr(schema_id);
-                };
-                if (schema) |schema_ptr| {
-                    try out.append(1);
-                    try self.writeSchemaFields(schema_ptr.*, schema_obj.presence, schema_obj.fields, out);
-                    if (effective_schema_id orelse self.state.last_schema_id) |id| {
-                        self.state.last_schema_id = id;
+                const schema_id = effective_schema_id orelse self.state.last_schema_id;
+                if (schema_id) |sid| {
+                    if (self.state.schemas.getPtr(sid)) |schema_ptr| {
+                        try self.writeSchemaFields(schema_ptr.*, schema_obj.presence, schema_obj.fields, out);
+                        self.state.last_schema_id = sid;
+                    } else {
+                        for (schema_obj.fields) |value| {
+                            try self.writeValue(&value, null, out);
+                        }
                     }
                 } else {
-                    try out.append(0);
                     for (schema_obj.fields) |value| {
                         try self.writeValue(&value, null, out);
                     }
@@ -417,6 +420,25 @@ pub const TwilicCodec = struct {
                 try wire.encodeVaruint(batch.columns.len, out);
                 for (batch.columns) |column| {
                     try self.writeColumn(&column, out);
+                }
+            },
+            .SchemaBatch => |batch| {
+                try out.append(@intFromEnum(MessageKind.SchemaBatch));
+                try wire.encodeVaruint(batch.schema_id, out);
+                try wire.encodeVaruint(batch.count, out);
+                try wire.encodeVaruint(batch.columns.len, out);
+                for (batch.columns) |column| {
+                    try self.writeSchemaBatchColumn(&column, batch.count, out);
+                }
+            },
+            .BoundStream => |stream| {
+                try out.append(@intFromEnum(MessageKind.BoundStream));
+                try wire.encodeVaruint(stream.schema_id, out);
+                try wire.encodeVaruint(stream.records.len, out);
+                try out.append(@intFromEnum(stream.presence_strategy));
+                const schema = self.state.schemas.getPtr(stream.schema_id) orelse return self.referenceError();
+                for (stream.records) |record| {
+                    try self.writeBoundRecord(schema.*, stream.presence_strategy, &record, out);
                 }
             },
             .Control => |control| {
@@ -567,23 +589,26 @@ pub const TwilicCodec = struct {
                 };
                 const presence = try self.readPresence(reader);
                 const len = try readCount(reader);
-                const encoding_mode = try reader.readU8();
 
                 const fields = try self.allocator.alloc(Value, len);
                 errdefer self.allocator.free(fields);
 
-                if (encoding_mode == 1) {
-                    const effective_schema_id = schema_id orelse self.state.last_schema_id orelse return TwilicError.InvalidData;
-                    const schema_ptr = self.state.schemas.getPtr(effective_schema_id) orelse return self.referenceError();
-                    try self.readSchemaFields(schema_ptr.*, presence, len, reader, fields);
-                    self.state.last_schema_id = effective_schema_id;
-                } else if (encoding_mode == 0) {
+                const effective_schema_id = schema_id orelse self.state.last_schema_id;
+                if (effective_schema_id) |sid| {
+                    if (self.state.schemas.getPtr(sid)) |schema_ptr| {
+                        try self.readSchemaFields(schema_ptr.*, presence, len, reader, fields);
+                        self.state.last_schema_id = sid;
+                    } else {
+                        for (fields) |*field| {
+                            field.* = try self.readValue(reader, null);
+                        }
+                        if (schema_id) |id| self.state.last_schema_id = id;
+                    }
+                } else {
                     for (fields) |*field| {
                         field.* = try self.readValue(reader, null);
                     }
                     if (schema_id) |id| self.state.last_schema_id = id;
-                } else {
-                    return TwilicError.InvalidData;
                 }
 
                 break :blk .{ .SchemaObject = .{
@@ -615,6 +640,34 @@ pub const TwilicCodec = struct {
                     column.* = try self.readColumn(reader);
                 }
                 break :blk .{ .ColumnBatch = .{ .count = count, .columns = columns } };
+            },
+            .SchemaBatch => blk: {
+                const schema_id = try reader.readVaruint();
+                const count = try reader.readVaruint();
+                const column_count = try readCount(reader);
+                const columns = try self.allocator.alloc(Column, column_count);
+                errdefer self.allocator.free(columns);
+                const schema = self.state.schemas.getPtr(schema_id);
+                for (columns, 0..) |*column, idx| {
+                    const field_id = if (schema) |s|
+                        if (idx < s.fields.len) s.fields[idx].number else @as(u64, @intCast(idx))
+                    else
+                        @as(u64, @intCast(idx));
+                    column.* = try self.readSchemaBatchColumn(field_id, count, reader);
+                }
+                break :blk .{ .SchemaBatch = .{ .schema_id = schema_id, .count = count, .columns = columns } };
+            },
+            .BoundStream => blk: {
+                const schema_id = try reader.readVaruint();
+                const record_count = try readCount(reader);
+                const presence_strategy = PresenceStrategy.fromByte(try reader.readU8()) orelse return TwilicError.InvalidData;
+                const schema = self.state.schemas.getPtr(schema_id) orelse return self.referenceError();
+                const records = try self.allocator.alloc(BoundRecord, record_count);
+                errdefer self.allocator.free(records);
+                for (records) |*record| {
+                    record.* = try self.readBoundRecord(schema.*, presence_strategy, reader);
+                }
+                break :blk .{ .BoundStream = .{ .schema_id = schema_id, .presence_strategy = presence_strategy, .records = records } };
             },
             .Control => .{ .Control = try self.readControl(reader) },
             .Ext => .{ .Ext = .{
@@ -892,38 +945,34 @@ pub const TwilicCodec = struct {
         if (std.mem.eql(u8, ty, "u64")) {
             if (value != .U64) return TwilicError.InvalidData;
             const u = value.U64;
-            if (fieldU64Range(field)) |range| {
-                if (u >= range.min and u <= range.max) {
-                    try out.append(1);
+            switch (field.physical_encoding) {
+                .Varuint => try wire.encodeVaruint(u, out),
+                .RangeBits => {
+                    const range = fieldU64Range(field) orelse return TwilicError.InvalidData;
+                    if (u < range.min or u > range.max) return TwilicError.InvalidData;
                     const offset = u - range.min;
                     const bits = rangeBitWidthU64(range.min, range.max);
                     try writeFixedBitsU64(offset, bits, out);
-                } else {
-                    try out.append(0);
-                    try writeSmallestU64(u, out);
-                }
-            } else {
-                try out.append(0);
-                try writeSmallestU64(u, out);
+                },
+                .FixedLe => try out.appendSlice(std.mem.asBytes(&u)),
+                .Auto, .ZigzagVaruint => try wire.encodeVaruint(u, out),
             }
             return;
         }
         if (std.mem.eql(u8, ty, "i64")) {
             if (value != .I64) return TwilicError.InvalidData;
             const i = value.I64;
-            if (fieldI64Range(field)) |range| {
-                if (i >= range.min and i <= range.max) {
-                    try out.append(1);
+            switch (field.physical_encoding) {
+                .ZigzagVaruint => try wire.encodeVaruint(wire.encodeZigzag(i), out),
+                .RangeBits => {
+                    const range = fieldI64Range(field) orelse return TwilicError.InvalidData;
+                    if (i < range.min or i > range.max) return TwilicError.InvalidData;
                     const offset = @as(u64, @intCast(i - range.min));
                     const bits = rangeBitWidthI64(range.min, range.max);
                     try writeFixedBitsU64(offset, bits, out);
-                } else {
-                    try out.append(0);
-                    try writeSmallestU64(wire.encodeZigzag(i), out);
-                }
-            } else {
-                try out.append(0);
-                try writeSmallestU64(wire.encodeZigzag(i), out);
+                },
+                .FixedLe => try out.appendSlice(std.mem.asBytes(&i)),
+                .Auto, .Varuint => try wire.encodeVaruint(wire.encodeZigzag(i), out),
             }
             return;
         }
@@ -937,12 +986,10 @@ pub const TwilicCodec = struct {
             if (value != .String) return TwilicError.InvalidData;
             if (self.state.field_enums.get(field.name)) |enum_values| {
                 if (indexOfString(enum_values, value.String)) |code| {
-                    try out.append(1);
                     try wire.encodeVaruint(code, out);
                     return;
                 }
             }
-            try out.append(0);
             try wire.encodeString(value.String, out);
             return;
         }
@@ -965,31 +1012,42 @@ pub const TwilicCodec = struct {
             } };
         }
         if (std.mem.eql(u8, ty, "u64")) {
-            const mode = try reader.readU8();
-            const value: u64 = if (mode == 1) blk: {
-                const range = fieldU64Range(field) orelse return TwilicError.InvalidData;
-                const bits = rangeBitWidthU64(range.min, range.max);
-                const offset = try readFixedBitsU64(reader, bits);
-                const span = range.max - range.min;
-                if (offset > span) return TwilicError.InvalidData;
-                const v = std.math.add(u64, range.min, offset) catch return TwilicError.InvalidData;
-                if (v > range.max) return TwilicError.InvalidData;
-                break :blk v;
-            } else if (mode == 0) try readSmallestU64(reader) else return TwilicError.InvalidData;
+            const value: u64 = switch (field.physical_encoding) {
+                .RangeBits => blk: {
+                    const range = fieldU64Range(field) orelse return TwilicError.InvalidData;
+                    const bits = rangeBitWidthU64(range.min, range.max);
+                    const offset = try readFixedBitsU64(reader, bits);
+                    const span = range.max - range.min;
+                    if (offset > span) return TwilicError.InvalidData;
+                    const v = std.math.add(u64, range.min, offset) catch return TwilicError.InvalidData;
+                    if (v > range.max) return TwilicError.InvalidData;
+                    break :blk v;
+                },
+                .FixedLe => blk: {
+                    const bytes = try reader.readExact(8);
+                    break :blk std.mem.bytesToValue(u64, bytes[0..8]);
+                },
+                .Varuint, .Auto, .ZigzagVaruint => try reader.readVaruint(),
+            };
             return .{ .U64 = value };
         }
         if (std.mem.eql(u8, ty, "i64")) {
-            const mode = try reader.readU8();
-            const value: i64 = if (mode == 1) blk: {
-                const range = fieldI64Range(field) orelse return TwilicError.InvalidData;
-                const bits = rangeBitWidthI64(range.min, range.max);
-                const offset = try readFixedBitsU64(reader, bits);
-                const span = @as(i128, range.max) - @as(i128, range.min);
-                if (@as(i128, @intCast(offset)) > span) return TwilicError.InvalidData;
-                const v128 = @as(i128, range.min) + @as(i128, @intCast(offset));
-                const v = std.math.cast(i64, v128) orelse return TwilicError.InvalidData;
-                break :blk v;
-            } else if (mode == 0) wire.decodeZigzag(try readSmallestU64(reader)) else return TwilicError.InvalidData;
+            const value: i64 = switch (field.physical_encoding) {
+                .RangeBits => blk: {
+                    const range = fieldI64Range(field) orelse return TwilicError.InvalidData;
+                    const bits = rangeBitWidthI64(range.min, range.max);
+                    const offset = try readFixedBitsU64(reader, bits);
+                    const span = @as(i128, range.max) - @as(i128, range.min);
+                    if (@as(i128, @intCast(offset)) > span) return TwilicError.InvalidData;
+                    const v128 = @as(i128, range.min) + @as(i128, @intCast(offset));
+                    break :blk std.math.cast(i64, v128) orelse return TwilicError.InvalidData;
+                },
+                .FixedLe => blk: {
+                    const bytes = try reader.readExact(8);
+                    break :blk std.mem.bytesToValue(i64, bytes[0..8]);
+                },
+                .ZigzagVaruint, .Auto, .Varuint => wire.decodeZigzag(try reader.readVaruint()),
+            };
             return .{ .I64 = value };
         }
         if (std.mem.eql(u8, ty, "f64")) {
@@ -997,18 +1055,19 @@ pub const TwilicCodec = struct {
             return .{ .F64 = std.mem.bytesToValue(f64, bytes[0..8]) };
         }
         if (std.mem.eql(u8, ty, "string")) {
-            const mode = try reader.readU8();
-            if (mode == 0) {
-                return .{ .String = try reader.readString(self.allocator) };
-            }
-            if (mode == 1) {
+            if (field.enum_values.len > 0) {
                 const code_u64 = try reader.readVaruint();
                 const code = std.math.cast(usize, code_u64) orelse return TwilicError.InvalidData;
-                const values = self.state.field_enums.get(field.name) orelse return self.referenceError();
+                if (code >= field.enum_values.len) return self.referenceError();
+                return .{ .String = try self.allocator.dupe(u8, field.enum_values[code]) };
+            }
+            if (self.state.field_enums.get(field.name)) |values| {
+                const code_u64 = try reader.readVaruint();
+                const code = std.math.cast(usize, code_u64) orelse return TwilicError.InvalidData;
                 if (code >= values.len) return self.referenceError();
                 return .{ .String = try self.allocator.dupe(u8, values[code]) };
             }
-            return TwilicError.InvalidData;
+            return .{ .String = try reader.readString(self.allocator) };
         }
         if (std.mem.eql(u8, ty, "binary")) {
             return .{ .Binary = try reader.readBytes(self.allocator) };
@@ -1233,6 +1292,114 @@ pub const TwilicCodec = struct {
             .dictionary_id = dictionary_id,
             .values = vector.data,
         };
+    }
+
+    fn writeSchemaBatchColumn(self: *TwilicCodec, column: *const Column, count: u64, out: *std.array_list.Managed(u8)) !void {
+        const strategy: u8 = switch (column.null_strategy) {
+            .None, .AllPresentElided => 0,
+            .PresenceBitmap => 1,
+            .InvertedPresenceBitmap => 2,
+        };
+        try out.append(strategy);
+        if (strategy == 1 or strategy == 2) {
+            const presence = column.presence orelse return TwilicError.InvalidData;
+            try wire.encodeFixedBitmap(presence, count, out);
+        }
+        try out.append(@intFromEnum(column.codec));
+        const element_type: ElementType = switch (column.values) {
+            .Bool => .Bool,
+            .I64 => .I64,
+            .U64 => .U64,
+            .F64 => .F64,
+            .String => .String,
+            .Binary => .Binary,
+            .Value => .Value,
+        };
+        const vector = TypedVector{
+            .element_type = element_type,
+            .codec = column.codec,
+            .data = try column.values.clone(self.allocator),
+        };
+        defer {
+            var mutable = vector;
+            mutable.deinit(self.allocator);
+        }
+        try self.writeTypedVector(&vector, out);
+    }
+
+    fn readSchemaBatchColumn(self: *TwilicCodec, field_id: u64, count: u64, reader: *Reader) !Column {
+        const strategy = try reader.readU8();
+        const null_strategy: NullStrategy = switch (strategy) {
+            0 => .None,
+            1 => .PresenceBitmap,
+            2 => .InvertedPresenceBitmap,
+            else => return TwilicError.InvalidData,
+        };
+        const presence: ?[]bool = switch (strategy) {
+            0 => null,
+            1 => try reader.readFixedBitmap(self.allocator, count),
+            2 => blk: {
+                const inverted = try reader.readFixedBitmap(self.allocator, count);
+                for (inverted) |*bit| bit.* = !bit.*;
+                break :blk inverted;
+            },
+            else => return TwilicError.InvalidData,
+        };
+        const codec_value = VectorCodec.fromByte(try reader.readU8()) orelse return TwilicError.InvalidData;
+        const vector = try self.readTypedVector(reader, codec_value);
+        return .{
+            .field_id = field_id,
+            .null_strategy = null_strategy,
+            .presence = presence,
+            .codec = codec_value,
+            .dictionary_id = null,
+            .values = vector.data,
+        };
+    }
+
+    fn writeBoundRecord(self: *TwilicCodec, schema: Schema, presence_strategy: PresenceStrategy, record: *const BoundRecord, out: *std.array_list.Managed(u8)) !void {
+        switch (presence_strategy) {
+            .Normal => {
+                const bits = record.presence orelse return TwilicError.InvalidData;
+                const count: u64 = @intCast(bits.len);
+                try wire.encodeFixedBitmap(bits, count, out);
+            },
+            .Inverted => {
+                const bits = record.presence orelse return TwilicError.InvalidData;
+                const count: u64 = @intCast(bits.len);
+                const inverted = try out.allocator.alloc(bool, bits.len);
+                defer out.allocator.free(inverted);
+                for (bits, 0..) |bit, idx| inverted[idx] = !bit;
+                try wire.encodeFixedBitmap(inverted, count, out);
+            },
+            .AllPresent => {},
+        }
+        try self.writeSchemaFields(schema, record.presence, record.fields, out);
+    }
+
+    fn readBoundRecord(self: *TwilicCodec, schema: Schema, presence_strategy: PresenceStrategy, reader: *Reader) !BoundRecord {
+        var optional_total: usize = 0;
+        for (schema.fields) |field| {
+            if (!field.required) optional_total += 1;
+        }
+        const total: u64 = @intCast(optional_total);
+        const presence: ?[]bool = switch (presence_strategy) {
+            .Normal => try reader.readFixedBitmap(self.allocator, total),
+            .Inverted => blk: {
+                const inverted = try reader.readFixedBitmap(self.allocator, total);
+                for (inverted) |*bit| bit.* = !bit.*;
+                break :blk inverted;
+            },
+            .AllPresent => null,
+        };
+        const indices = try schemaPresentFieldIndices(schema, presence, self.allocator);
+        defer self.allocator.free(indices);
+        const fields = try self.allocator.alloc(Value, indices.len);
+        errdefer self.allocator.free(fields);
+        for (indices, 0..) |index, idx| {
+            fields[idx] = try self.readSchemaFieldValue(schema.fields[index], reader);
+        }
+        return .{ .presence = presence, .fields = fields };
     }
 
     fn writeControl(self: *TwilicCodec, control: *const ControlMessage, out: *std.array_list.Managed(u8)) !void {
@@ -1591,6 +1758,62 @@ pub const SessionEncoder = struct {
             const rows_clone = try cloneRows(rows, self.codec.allocator);
             message = .{ .RowBatch = .{ .rows = rows_clone } };
         }
+        defer message.deinit(self.codec.allocator);
+
+        const bytes = try self.codec.encodeMessage(&message);
+        try self.codec.setPreviousMessage(message);
+        try self.recordFullMessageAsBase();
+        return bytes;
+    }
+
+    pub fn encodeBoundStream(self: *SessionEncoder, schema: Schema, values: []const Value) ![]u8 {
+        if (self.codec.state.schemas.getPtr(schema.schema_id)) |existing| {
+            existing.deinit(self.codec.allocator);
+            existing.* = try schema.clone(self.codec.allocator);
+        } else {
+            try self.codec.state.schemas.put(self.codec.allocator, schema.schema_id, try schema.clone(self.codec.allocator));
+        }
+
+        var records = std.array_list.Managed(model.BoundRecord).init(self.codec.allocator);
+        errdefer {
+            for (records.items) |*r| r.deinit(self.codec.allocator);
+            records.deinit();
+        }
+        var any_absent = false;
+        for (values) |value| {
+            const record = try boundRecordFromValue(schema, &value, self.codec.allocator);
+            if (record.presence != null) any_absent = true;
+            try records.append(record);
+        }
+
+        const presence_strategy: PresenceStrategy = if (any_absent) .Normal else .AllPresent;
+        var message = Message{ .BoundStream = .{
+            .schema_id = schema.schema_id,
+            .presence_strategy = presence_strategy,
+            .records = try records.toOwnedSlice(),
+        } };
+        defer message.deinit(self.codec.allocator);
+
+        const bytes = try self.codec.encodeMessage(&message);
+        try self.codec.setPreviousMessage(message);
+        try self.recordFullMessageAsBase();
+        return bytes;
+    }
+
+    pub fn encodeBatchWithSchema(self: *SessionEncoder, schema: Schema, values: []const Value) ![]u8 {
+        if (self.codec.state.schemas.getPtr(schema.schema_id)) |existing| {
+            existing.deinit(self.codec.allocator);
+            existing.* = try schema.clone(self.codec.allocator);
+        } else {
+            try self.codec.state.schemas.put(self.codec.allocator, schema.schema_id, try schema.clone(self.codec.allocator));
+        }
+
+        const columns = try schemaColumnsFromValues(schema, values, self.codec.allocator);
+        var message = Message{ .SchemaBatch = .{
+            .schema_id = schema.schema_id,
+            .count = @intCast(values.len),
+            .columns = columns,
+        } };
         defer message.deinit(self.codec.allocator);
 
         const bytes = try self.codec.encodeMessage(&message);
@@ -3705,4 +3928,105 @@ fn appendValues(base: []const Value, append: []const Value, allocator: Allocator
         out[base.len + idx] = try value.clone(allocator);
     }
     return out;
+}
+
+fn boundRecordFromValue(schema: Schema, value: *const Value, allocator: Allocator) !model.BoundRecord {
+    if (value.* != .Map) return TwilicError.InvalidData;
+    var fields = std.array_list.Managed(Value).init(allocator);
+    errdefer fields.deinit();
+    var optional_presence = std.array_list.Managed(bool).init(allocator);
+    defer optional_presence.deinit();
+    var has_absent_optional = false;
+
+    for (schema.fields) |field| {
+        const field_value = lookupMapField(value.*, field.name);
+        if (field.required) {
+            if (field_value) |v| {
+                try fields.append(try v.clone(allocator));
+            } else if (field.default_value) |default| {
+                try fields.append(try default.clone(allocator));
+            } else {
+                return TwilicError.InvalidData;
+            }
+        } else {
+            if (field_value) |v| {
+                try optional_presence.append(true);
+                try fields.append(try v.clone(allocator));
+            } else {
+                try optional_presence.append(false);
+                has_absent_optional = true;
+            }
+        }
+    }
+
+    const presence: ?[]bool = if (has_absent_optional)
+        try allocator.dupe(bool, optional_presence.items)
+    else
+        null;
+
+    return .{
+        .presence = presence,
+        .fields = try fields.toOwnedSlice(),
+    };
+}
+
+fn schemaColumnsFromValues(schema: Schema, values: []const Value, allocator: Allocator) ![]Column {
+    const columns = try allocator.alloc(Column, schema.fields.len);
+    errdefer allocator.free(columns);
+
+    for (schema.fields, 0..) |field, col_idx| {
+        var column_values = std.array_list.Managed(Value).init(allocator);
+        defer {
+            for (column_values.items) |*v| v.deinit(allocator);
+            column_values.deinit();
+        }
+        var present_bits = std.array_list.Managed(bool).init(allocator);
+        defer present_bits.deinit();
+        var has_absent = false;
+
+        for (values) |value| {
+            if (lookupMapField(value, field.name)) |v| {
+                try present_bits.append(true);
+                try column_values.append(try v.clone(allocator));
+            } else if (field.required) {
+                if (field.default_value) |default| {
+                    try present_bits.append(true);
+                    try column_values.append(try default.clone(allocator));
+                } else {
+                    return TwilicError.InvalidData;
+                }
+            } else {
+                try present_bits.append(false);
+                has_absent = true;
+            }
+        }
+
+        const null_strategy: NullStrategy = if (has_absent)
+            .PresenceBitmap
+        else
+            .None;
+
+        const presence: ?[]bool = if (has_absent)
+            try allocator.dupe(bool, present_bits.items)
+        else
+            null;
+
+        const non_null = try stripNulls(column_values.items, allocator);
+        defer {
+            for (non_null) |*v| v.deinit(allocator);
+            allocator.free(non_null);
+        }
+        const infer = try inferColumnCodecAndValues(non_null, allocator);
+
+        columns[col_idx] = .{
+            .field_id = field.number,
+            .null_strategy = null_strategy,
+            .presence = presence,
+            .codec = infer.codec,
+            .dictionary_id = null,
+            .values = infer.values,
+        };
+    }
+
+    return columns;
 }

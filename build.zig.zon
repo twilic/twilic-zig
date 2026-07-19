@@ -1,8 +1,8 @@
 .{
     .name = .twilic,
-    .version = "2.0.0",
+    .version = "3.0.0",
     .fingerprint = 0xde4b86a72cbd947,
-    .minimum_zig_version = "0.15.0",
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{},
     .paths = .{
         "build.zig",

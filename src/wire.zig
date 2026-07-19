@@ -52,6 +52,24 @@ pub fn encodeBitmap(bits: []const bool, out: *std.array_list.Managed(u8)) !void 
     }
 }
 
+pub fn encodeFixedBitmap(bits: []const bool, count: u64, out: *std.array_list.Managed(u8)) !void {
+    const c = std.math.cast(usize, count) orelse return TwilicError.InvalidData;
+    if (bits.len != c) return TwilicError.InvalidData;
+    var current: u8 = 0;
+    for (bits, 0..) |bit, idx| {
+        if (bit) {
+            current |= @as(u8, 1) << @intCast(idx % 8);
+        }
+        if (idx % 8 == 7) {
+            try out.append(current);
+            current = 0;
+        }
+    }
+    if (bits.len % 8 != 0) {
+        try out.append(current);
+    }
+}
+
 pub const Reader = struct {
     input: []const u8,
     offset: usize,
@@ -130,6 +148,18 @@ pub const Reader = struct {
     pub fn readBitmap(self: *Reader, allocator: std.mem.Allocator) ![]bool {
         const bit_count_u64 = try self.readVaruint();
         const bit_count = std.math.cast(usize, bit_count_u64) orelse return TwilicError.InvalidData;
+        const byte_count = std.math.divCeil(usize, bit_count, 8) catch unreachable;
+        const bytes = try self.readExact(byte_count);
+        const bits = try allocator.alloc(bool, bit_count);
+        for (bits, 0..) |*bit, idx| {
+            const byte = bytes[idx / 8];
+            bit.* = ((byte >> @intCast(idx % 8)) & 1) == 1;
+        }
+        return bits;
+    }
+
+    pub fn readFixedBitmap(self: *Reader, allocator: std.mem.Allocator, count: u64) ![]bool {
+        const bit_count = std.math.cast(usize, count) orelse return TwilicError.InvalidData;
         const byte_count = std.math.divCeil(usize, bit_count, 8) catch unreachable;
         const bytes = try self.readExact(byte_count);
         const bits = try allocator.alloc(bool, bit_count);

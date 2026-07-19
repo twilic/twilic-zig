@@ -2,19 +2,35 @@
 
 Zig implementation of the Twilic wire format and session-aware encoder/decoder.
 
-This repository tracks the Twilic v2 release line.
+Supports Twilic v3 (Dynamic, Bound, Batch, Stateful profiles).
 
 ## What this package provides
 
+### v3 APIs
+
+- `encodeBoundStream(schema, values)` — schema-bound compact record stream (`BOUND_STREAM`)
+- `encodeBatchWithSchema(schema, values)` — schema-aware columnar batch (`SCHEMA_BATCH`)
+
+### v2 APIs (also available)
+
 - Dynamic encoding/decoding (`encode`, `decode`)
-- Schema-aware encoding (`SessionEncoder.encodeWithSchema`)
-- Batch encoding (`SessionEncoder.encodeBatch`)
+- Schema-aware encoding (`encodeWithSchema`)
+- Batch encoding (`encodeBatch`)
 - Session table behavior (key/string interning, shape promotion, reset controls)
 - Vector codecs (Simple8b, RLE, FOR/direct bitpack, XOR float, and plain)
+- Stateful extensions (state patch, template batch, base snapshot, control stream)
+
+### v3 type enhancements
+
+- `SchemaField` now carries `physical_encoding` (`Auto`, `Varuint`, `ZigzagVaruint`, `RangeBits`, `FixedLe`)
+- `PhysicalEncoding` enum for explicit per-field integer encoding
+- `PresenceStrategy` enum (`Normal`, `Inverted`, `AllPresent`)
+- `BoundRecord` struct for compact record bodies
+- No per-field fallback mode bytes on the wire (per v3 spec)
 
 ## Requirements
 
-- Zig 0.15.2 (minimum `0.15.0`)
+- Zig 0.16.0 (minimum `0.16.0`)
 
 ## Quick start
 

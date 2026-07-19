@@ -17,9 +17,29 @@ pub const MessageKind = enum(u8) {
     TemplateBatch = 0x0B,
     ControlStream = 0x0C,
     BaseSnapshot = 0x0D,
+    SchemaBatch = 0x0E,
+    BoundStream = 0x0F,
 
     pub fn fromByte(byte: u8) ?MessageKind {
-        return std.meta.intToEnum(MessageKind, byte) catch null;
+        return switch (byte) {
+            0x00 => .Scalar,
+            0x01 => .Array,
+            0x02 => .Map,
+            0x03 => .ShapedObject,
+            0x04 => .SchemaObject,
+            0x05 => .TypedVector,
+            0x06 => .RowBatch,
+            0x07 => .ColumnBatch,
+            0x08 => .Control,
+            0x09 => .Ext,
+            0x0A => .StatePatch,
+            0x0B => .TemplateBatch,
+            0x0C => .ControlStream,
+            0x0D => .BaseSnapshot,
+            0x0E => .SchemaBatch,
+            0x0F => .BoundStream,
+            else => null,
+        };
     }
 };
 
@@ -203,7 +223,14 @@ pub const StringMode = enum(u8) {
     InlineEnum = 4,
 
     pub fn fromByte(byte: u8) ?StringMode {
-        return std.meta.intToEnum(StringMode, byte) catch null;
+        return switch (byte) {
+            0 => .Empty,
+            1 => .Literal,
+            2 => .Ref,
+            3 => .PrefixDelta,
+            4 => .InlineEnum,
+            else => null,
+        };
     }
 };
 
@@ -224,7 +251,16 @@ pub const ElementType = enum(u8) {
     Value = 6,
 
     pub fn fromByte(byte: u8) ?ElementType {
-        return std.meta.intToEnum(ElementType, byte) catch null;
+        return switch (byte) {
+            0 => .Bool,
+            1 => .I64,
+            2 => .U64,
+            3 => .F64,
+            4 => .String,
+            5 => .Binary,
+            6 => .Value,
+            else => null,
+        };
     }
 };
 
@@ -244,7 +280,22 @@ pub const VectorCodec = enum(u8) {
     PrefixDelta = 12,
 
     pub fn fromByte(byte: u8) ?VectorCodec {
-        return std.meta.intToEnum(VectorCodec, byte) catch null;
+        return switch (byte) {
+            0 => .Plain,
+            1 => .DirectBitpack,
+            2 => .DeltaBitpack,
+            3 => .ForBitpack,
+            4 => .DeltaForBitpack,
+            5 => .DeltaDeltaBitpack,
+            6 => .Rle,
+            7 => .PatchedFor,
+            8 => .Simple8b,
+            9 => .XorFloat,
+            10 => .Dictionary,
+            11 => .StringRef,
+            12 => .PrefixDelta,
+            else => null,
+        };
     }
 };
 
@@ -353,10 +404,30 @@ pub const TypedVector = struct {
     }
 };
 
+pub const PhysicalEncoding = enum(u8) {
+    Auto = 0,
+    Varuint = 1,
+    ZigzagVaruint = 2,
+    RangeBits = 3,
+    FixedLe = 4,
+
+    pub fn fromByte(byte: u8) ?PhysicalEncoding {
+        return switch (byte) {
+            0 => .Auto,
+            1 => .Varuint,
+            2 => .ZigzagVaruint,
+            3 => .RangeBits,
+            4 => .FixedLe,
+            else => null,
+        };
+    }
+};
+
 pub const SchemaField = struct {
     number: u64,
     name: []u8,
     logical_type: []u8,
+    physical_encoding: PhysicalEncoding,
     required: bool,
     default_value: ?Value,
     min: ?i64,
@@ -368,6 +439,7 @@ pub const SchemaField = struct {
             .number = self.number,
             .name = try allocator.dupe(u8, self.name),
             .logical_type = try allocator.dupe(u8, self.logical_type),
+            .physical_encoding = self.physical_encoding,
             .required = self.required,
             .default_value = if (self.default_value) |value| try value.clone(allocator) else null,
             .min = self.min,
@@ -386,7 +458,7 @@ pub const SchemaField = struct {
     }
 
     pub fn eql(a: SchemaField, b: SchemaField) bool {
-        if (a.number != b.number or !std.mem.eql(u8, a.name, b.name) or !std.mem.eql(u8, a.logical_type, b.logical_type) or a.required != b.required or a.min != b.min or a.max != b.max) {
+        if (a.number != b.number or !std.mem.eql(u8, a.name, b.name) or !std.mem.eql(u8, a.logical_type, b.logical_type) or a.physical_encoding != b.physical_encoding or a.required != b.required or a.min != b.min or a.max != b.max) {
             return false;
         }
         if ((a.default_value == null) != (b.default_value == null)) return false;
@@ -441,7 +513,13 @@ pub const NullStrategy = enum(u8) {
     AllPresentElided = 3,
 
     pub fn fromByte(byte: u8) ?NullStrategy {
-        return std.meta.intToEnum(NullStrategy, byte) catch null;
+        return switch (byte) {
+            0 => .None,
+            1 => .PresenceBitmap,
+            2 => .InvertedPresenceBitmap,
+            3 => .AllPresentElided,
+            else => null,
+        };
     }
 };
 
@@ -492,7 +570,15 @@ pub const ControlOpcode = enum(u8) {
     ResetState = 5,
 
     pub fn fromByte(byte: u8) ?ControlOpcode {
-        return std.meta.intToEnum(ControlOpcode, byte) catch null;
+        return switch (byte) {
+            0 => .RegisterKeys,
+            1 => .RegisterShape,
+            2 => .RegisterStrings,
+            3 => .PromoteStringFieldToEnum,
+            4 => .ResetTables,
+            5 => .ResetState,
+            else => null,
+        };
     }
 };
 
@@ -587,7 +673,18 @@ pub const PatchOpcode = enum(u8) {
     PrefixDelta = 8,
 
     pub fn fromByte(byte: u8) ?PatchOpcode {
-        return std.meta.intToEnum(PatchOpcode, byte) catch null;
+        return switch (byte) {
+            0 => .Keep,
+            1 => .ReplaceScalar,
+            2 => .ReplaceVector,
+            3 => .AppendVector,
+            4 => .TruncateVector,
+            5 => .DeleteField,
+            6 => .InsertField,
+            7 => .StringRef,
+            8 => .PrefixDelta,
+            else => null,
+        };
     }
 };
 
@@ -646,7 +743,55 @@ pub const ControlStreamCodec = enum(u8) {
     Fse = 4,
 
     pub fn fromByte(byte: u8) ?ControlStreamCodec {
-        return std.meta.intToEnum(ControlStreamCodec, byte) catch null;
+        return switch (byte) {
+            0 => .Plain,
+            1 => .Rle,
+            2 => .Bitpack,
+            3 => .Huffman,
+            4 => .Fse,
+            else => null,
+        };
+    }
+};
+
+pub const PresenceStrategy = enum(u8) {
+    Normal = 0,
+    Inverted = 1,
+    AllPresent = 2,
+
+    pub fn fromByte(byte: u8) ?PresenceStrategy {
+        return switch (byte) {
+            0 => .Normal,
+            1 => .Inverted,
+            2 => .AllPresent,
+            else => null,
+        };
+    }
+};
+
+pub const BoundRecord = struct {
+    presence: ?[]bool,
+    fields: []Value,
+
+    pub fn clone(self: BoundRecord, allocator: Allocator) Allocator.Error!BoundRecord {
+        return .{
+            .presence = if (self.presence) |bits| try allocator.dupe(bool, bits) else null,
+            .fields = try cloneValues(self.fields, allocator),
+        };
+    }
+
+    pub fn deinit(self: *BoundRecord, allocator: Allocator) void {
+        if (self.presence) |bits| allocator.free(bits);
+        for (self.fields) |*value| value.deinit(allocator);
+        allocator.free(self.fields);
+    }
+
+    pub fn eql(a: BoundRecord, b: BoundRecord) bool {
+        if ((a.presence == null) != (b.presence == null)) return false;
+        if (a.presence) |bits| {
+            if (!std.mem.eql(bool, bits, b.presence.?)) return false;
+        }
+        return eqlValues(a.fields, b.fields);
     }
 };
 
@@ -659,6 +804,8 @@ pub const MessageTag = enum {
     TypedVector,
     RowBatch,
     ColumnBatch,
+    SchemaBatch,
+    BoundStream,
     Control,
     Ext,
     StatePatch,
@@ -676,6 +823,8 @@ pub const Message = union(MessageTag) {
     TypedVector: TypedVector,
     RowBatch: struct { rows: [][]Value },
     ColumnBatch: struct { count: u64, columns: []Column },
+    SchemaBatch: struct { schema_id: u64, count: u64, columns: []Column },
+    BoundStream: struct { schema_id: u64, presence_strategy: PresenceStrategy, records: []BoundRecord },
     Control: ControlMessage,
     Ext: struct { ext_type: u64, payload: []u8 },
     StatePatch: struct { base_ref: BaseRef, operations: []PatchOperation, literals: []Value },
@@ -708,6 +857,16 @@ pub const Message = union(MessageTag) {
             .ColumnBatch => |batch| .{ .ColumnBatch = .{
                 .count = batch.count,
                 .columns = try cloneColumns(batch.columns, allocator),
+            } },
+            .SchemaBatch => |batch| .{ .SchemaBatch = .{
+                .schema_id = batch.schema_id,
+                .count = batch.count,
+                .columns = try cloneColumns(batch.columns, allocator),
+            } },
+            .BoundStream => |stream| .{ .BoundStream = .{
+                .schema_id = stream.schema_id,
+                .presence_strategy = stream.presence_strategy,
+                .records = try cloneBoundRecords(stream.records, allocator),
             } },
             .Control => |control| .{ .Control = try control.clone(allocator) },
             .Ext => |ext| .{ .Ext = .{
@@ -775,6 +934,14 @@ pub const Message = union(MessageTag) {
                 for (batch.columns) |*column| column.deinit(allocator);
                 allocator.free(batch.columns);
             },
+            .SchemaBatch => |batch| {
+                for (batch.columns) |*column| column.deinit(allocator);
+                allocator.free(batch.columns);
+            },
+            .BoundStream => |stream| {
+                for (stream.records) |*record| record.deinit(allocator);
+                allocator.free(stream.records);
+            },
             .Control => |*control| control.deinit(allocator),
             .Ext => |ext| allocator.free(ext.payload),
             .StatePatch => |patch| {
@@ -817,6 +984,23 @@ pub const Message = union(MessageTag) {
                 if (batch.count != rhs.count or batch.columns.len != rhs.columns.len) return false;
                 for (batch.columns, 0..) |column, idx| {
                     if (!Column.eql(column, rhs.columns[idx])) return false;
+                }
+                break :blk true;
+            },
+            .SchemaBatch => |batch| blk: {
+                const rhs = b.SchemaBatch;
+                if (batch.schema_id != rhs.schema_id or batch.count != rhs.count or batch.columns.len != rhs.columns.len) return false;
+                for (batch.columns, 0..) |column, idx| {
+                    if (!Column.eql(column, rhs.columns[idx])) return false;
+                }
+                break :blk true;
+            },
+            .BoundStream => |stream| blk: {
+                const rhs = b.BoundStream;
+                if (stream.schema_id != rhs.schema_id or stream.presence_strategy != rhs.presence_strategy) return false;
+                if (stream.records.len != rhs.records.len) return false;
+                for (stream.records, 0..) |record, idx| {
+                    if (!BoundRecord.eql(record, rhs.records[idx])) return false;
                 }
                 break :blk true;
             },
@@ -964,6 +1148,15 @@ fn clonePatchOperations(ops: []const PatchOperation, allocator: Allocator) Alloc
     errdefer allocator.free(out);
     for (ops, 0..) |op, idx| {
         out[idx] = try op.clone(allocator);
+    }
+    return out;
+}
+
+fn cloneBoundRecords(records: []const BoundRecord, allocator: Allocator) Allocator.Error![]BoundRecord {
+    const out = try allocator.alloc(BoundRecord, records.len);
+    errdefer allocator.free(out);
+    for (records, 0..) |record, idx| {
+        out[idx] = try record.clone(allocator);
     }
     return out;
 }
